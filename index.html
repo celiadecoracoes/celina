@@ -2569,26 +2569,71 @@ function dispositivoIOS() {
   return /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
 }
 
-function configurarManifestoPWA() {
+// O Chrome/Android so considera o app "instalavel" (e so dispara o evento
+// beforeinstallprompt, que permite a instalacao automatica) se os icones
+// do manifesto forem PNG de verdade. Se o logo enviado for JPEG (ou outro
+// formato), essa checagem falha silenciosamente e o navegador nunca
+// oferece a instalacao automatica -- caindo sempre no modo manual.
+// Esta funcao redesenha o logo num <canvas> e devolve um PNG real no
+// tamanho pedido, nao importa o formato/tamanho original do arquivo.
+function converterLogoParaPngDataUri(dataUri, tamanho) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = tamanho;
+        canvas.height = tamanho;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = (banco && banco.configuracoes && banco.configuracoes.corSecundaria) || "#0a1220";
+        ctx.fillRect(0, 0, tamanho, tamanho);
+        const escala = Math.min(tamanho / img.width, tamanho / img.height);
+        const w = img.width * escala;
+        const h = img.height * escala;
+        ctx.drawImage(img, (tamanho - w) / 2, (tamanho - h) / 2, w, h);
+        resolve(canvas.toDataURL("image/png"));
+      } catch (erro) {
+        reject(erro);
+      }
+    };
+    img.onerror = reject;
+    img.src = dataUri;
+  });
+}
+
+async function configurarManifestoPWA() {
   const cfg = banco.configuracoes;
-  const tipoIcone = tipoMimeDeDataUri(cfg.logoBase64);
-  const manifesto = {
-    name: `${cfg.nomeEmpresa} · ${cfg.nomePrograma}`,
-    short_name: cfg.nomeEmpresa,
-    description: cfg.mensagemBoasVindas,
-    start_url: ".",
-    scope: ".",
-    display: "standalone",
-    orientation: "portrait-primary",
-    background_color: cfg.corSecundaria || "#0a1220",
-    theme_color: cfg.corPrimaria || "#2fb2ff",
-    icons: [
-      { src: cfg.logoBase64, sizes: "192x192", type: tipoIcone, purpose: "any" },
-      { src: cfg.logoBase64, sizes: "512x512", type: tipoIcone, purpose: "any" },
-      { src: cfg.logoBase64, sizes: "512x512", type: tipoIcone, purpose: "maskable" }
-    ]
-  };
   try {
+    // Gera icones PNG reais nos tamanhos exigidos pelo Chrome, a partir do
+    // logo cadastrado (seja qual for o formato original enviado).
+    const [icone192, icone512] = await Promise.all([
+      converterLogoParaPngDataUri(cfg.logoBase64, 192),
+      converterLogoParaPngDataUri(cfg.logoBase64, 512)
+    ]);
+
+    // Usa URL absoluta (nao "." relativo) para start_url/scope. Como o
+    // manifesto e servido via blob:, URLs relativas podem ser resolvidas
+    // de forma inconsistente entre navegadores Android e quebram
+    // silenciosamente os criterios de instalabilidade do Chrome.
+    const pastaAtual = new URL(".", window.location.href).href;
+
+    const manifesto = {
+      name: `${cfg.nomeEmpresa} · ${cfg.nomePrograma}`,
+      short_name: cfg.nomeEmpresa,
+      description: cfg.mensagemBoasVindas,
+      start_url: pastaAtual,
+      scope: pastaAtual,
+      display: "standalone",
+      orientation: "portrait-primary",
+      background_color: cfg.corSecundaria || "#0a1220",
+      theme_color: cfg.corPrimaria || "#2fb2ff",
+      icons: [
+        { src: icone192, sizes: "192x192", type: "image/png", purpose: "any" },
+        { src: icone512, sizes: "512x512", type: "image/png", purpose: "any" },
+        { src: icone512, sizes: "512x512", type: "image/png", purpose: "maskable" }
+      ]
+    };
+
     const blob = new Blob([JSON.stringify(manifesto)], { type: "application/manifest+json" });
     const url = URL.createObjectURL(blob);
     let link = document.getElementById("link-manifesto-pwa");
@@ -2600,16 +2645,16 @@ function configurarManifestoPWA() {
     }
     link.href = url;
   } catch (erro) {
-    console.error("Não foi possível preparar o manifesto do aplicativo:", erro);
+    console.error("Nao foi possivel preparar o manifesto do aplicativo:", erro);
   }
 }
 
 function registrarServiceWorkerPWA() {
   if (!("serviceWorker" in navigator)) return;
   // Arquivo sw.js precisa estar hospedado na mesma pasta do index.html
-  // (mesma origem) para ativar cache offline e o prompt automático de
-  // instalação. Sem ele, o botão de instalar continua funcionando pelo
-  // método manual/instruções.
+  // (mesma origem) para ativar cache offline e o prompt automatico de
+  // instalacao. Sem ele, o botao de instalar continua funcionando pelo
+  // metodo manual/instrucoes.
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }
 
@@ -2621,8 +2666,8 @@ function esconderBotaoInstalarApp() {
   document.getElementById("btn-inicio-instalar")?.classList.add("oculto");
 }
 
-function configurarInstalacaoPWA() {
-  configurarManifestoPWA();
+async function configurarInstalacaoPWA() {
+  await configurarManifestoPWA();
   registrarServiceWorkerPWA();
 
   if (appJaInstalado()) {
@@ -2650,7 +2695,7 @@ async function acionarInstalacaoApp() {
     try {
       await deferredPromptPWA.userChoice;
     } catch (erro) {
-      /* usuário fechou o prompt nativo */
+      /* usuario fechou o prompt nativo */
     }
     deferredPromptPWA = null;
     return;
